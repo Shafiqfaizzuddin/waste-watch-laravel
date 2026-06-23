@@ -104,7 +104,7 @@
       <div class="detail-section">
         <h4>Citizen Attachments</h4>
         @php
-          $photosList = is_array($report->photos) ? $report->photos : json_decode($report->photos, true) ?: [];
+          $photosList = is_array($report->photos) ? $report->photos : (json_decode($report->photos, true) ?: []);
         @endphp
         @if(empty($photosList))
           <p style="color:var(--clr-text3); font-style:italic; font-size:0.88rem;">No photographs were uploaded with this incident report.</p>

@@ -265,7 +265,7 @@
         
         <div class="photo-previews">
           @php
-            $photosList = is_array($report->photos) ? $report->photos : json_decode($report->photos, true) ?: [];
+            $photosList = is_array($report->photos) ? $report->photos : (json_decode($report->photos, true) ?: []);
           @endphp
           @for($i = 0; $i < 3; $i++)
             @php
