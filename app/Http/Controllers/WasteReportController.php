@@ -7,6 +7,8 @@ use App\Models\Report;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Mail;
+use App\Mail\NewReportSubmitted;
 
 class WasteReportController extends Controller
 {
@@ -91,7 +93,21 @@ class WasteReportController extends Controller
         }
         $reportData['photos'] = $photos;
 
-        Report::create($reportData);
+        $report = Report::create($reportData);
+
+        try {
+            // Send email to all administrators to notify them of the new report
+            $admins = \App\Models\User::where('role', 'admin')->get();
+            if ($admins->isNotEmpty()) {
+                foreach ($admins as $admin) {
+                    Mail::to($admin->email)->send(new NewReportSubmitted($report));
+                }
+            } else {
+                Mail::to('admin@wastewatch.gov.my')->send(new NewReportSubmitted($report));
+            }
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::error('Failed to send admin email notification: ' . $e->getMessage());
+        }
 
         return redirect()->route('dashboard')->with('success', 'Incident report submitted successfully.');
     }
