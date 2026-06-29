@@ -3,6 +3,7 @@
 @section('title', 'Submit Incident Report – WasteWatch')
 
 @section('styles')
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <style>
   /* Progress Steps */
   .form-progress {
@@ -122,6 +123,79 @@
   .gps-coords strong { display: block; margin-bottom: 2px; }
   .gps-coords span { color: var(--clr-text3); font-size: 0.78rem; }
 
+  .map-picker {
+    margin-top: 14px;
+    background: var(--clr-bg);
+    border: 1px solid var(--clr-border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+  .map-search {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    padding: 12px;
+    border-bottom: 1px solid var(--clr-border);
+    background: var(--clr-bg2);
+  }
+  .map-search-field { position: relative; }
+  .map-search-field i {
+    position: absolute;
+    left: 13px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--clr-text3);
+    pointer-events: none;
+    font-size: 0.85rem;
+  }
+  .map-search-field .form-control { padding-left: 40px; }
+  .map-results {
+    display: none;
+    border-bottom: 1px solid var(--clr-border);
+    background: var(--clr-surface);
+    max-height: 180px;
+    overflow-y: auto;
+  }
+  .map-result {
+    width: 100%;
+    padding: 10px 14px;
+    border: 0;
+    border-bottom: 1px solid var(--clr-border);
+    background: transparent;
+    color: var(--clr-text);
+    text-align: left;
+    cursor: pointer;
+    font-size: 0.82rem;
+  }
+  .map-result:hover { background: rgba(34,197,94,0.08); }
+  .map-result:last-child { border-bottom: 0; }
+  .map-result span { display: block; color: var(--clr-text3); font-size: 0.74rem; margin-top: 2px; }
+  #tomtom-map {
+    width: 100%;
+    height: 340px;
+    background: var(--clr-bg2);
+  }
+  .map-helper {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    border-top: 1px solid var(--clr-border);
+    color: var(--clr-text3);
+    font-size: 0.78rem;
+  }
+  .map-helper-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .leaflet-container {
+    background: var(--clr-bg2);
+    color: var(--clr-text);
+    font-family: inherit;
+  }
+  .leaflet-control-attribution {
+    background: rgba(255,255,255,0.86);
+    color: #1f2937;
+  }
+
   /* Form Footer */
   .form-footer {
     padding: 24px 32px;
@@ -134,6 +208,9 @@
 
   @media (max-width: 900px) {
     .category-grid { grid-template-columns: repeat(2, 1fr); }
+    .map-search { grid-template-columns: 1fr; }
+    #tomtom-map { height: 280px; }
+    .map-helper { align-items: flex-start; flex-direction: column; }
   }
 </style>
 @endsection
@@ -287,6 +364,31 @@
               <i class="fas fa-redo"></i> Refresh
             </button>
           </div>
+
+          <div class="map-picker">
+            <div class="map-search">
+              <div class="map-search-field">
+                <i class="fas fa-search"></i>
+                <input type="text" id="tomtom-search" class="form-control" placeholder="Search address or landmark in Malaysia" autocomplete="off"/>
+              </div>
+              <button type="button" class="btn btn-ghost btn-sm" onclick="searchTomTomLocation()">
+                <i class="fas fa-location-dot"></i> Search
+              </button>
+            </div>
+            <div id="tomtom-results" class="map-results"></div>
+            <div id="tomtom-map" aria-label="TomTom map location picker"></div>
+            <div class="map-helper">
+              <span id="tomtom-map-helper">Click the map or drag the marker to set the incident location.</span>
+              <div class="map-helper-actions">
+                <button type="button" class="btn btn-ghost btn-sm" onclick="refreshGPS()">
+                  <i class="fas fa-crosshairs"></i> Current
+                </button>
+                <button type="button" class="btn btn-ghost btn-sm" onclick="centerTomTomMap()">
+                  <i class="fas fa-bullseye"></i> Center
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- Manual Panel -->
@@ -343,7 +445,17 @@
 @endsection
 
 @section('scripts')
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
+  const TOMTOM_API_KEY = @json(config('services.tomtom.key'));
+  const TOMTOM_DEFAULT_LOCATION = {
+    lat: Number(@json(old('latitude', '3.1390'))),
+    lng: Number(@json(old('longitude', '101.6869'))),
+  };
+  let incidentMap = null;
+  let incidentMarker = null;
+  let tomtomSearchController = null;
+
   function updateChar(el, countId, max) {
     document.getElementById(countId).textContent = el.value.length;
   }
@@ -352,6 +464,20 @@
   document.addEventListener('DOMContentLoaded', () => {
     updateChar(document.getElementById('report-title'), 'title-count', 120);
     updateChar(document.getElementById('report-desc'), 'desc-count', 1000);
+  });
+
+  document.addEventListener('DOMContentLoaded', () => {
+    initTomTomMap();
+
+    const searchInput = document.getElementById('tomtom-search');
+    if (searchInput) {
+      searchInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          searchTomTomLocation();
+        }
+      });
+    }
   });
 
   function switchTab(tab) {
@@ -365,6 +491,9 @@
       gps.style.display = ''; manual.style.display = 'none';
       tabGps.classList.add('active'); tabManual.classList.remove('active');
       typeInput.value = 'gps';
+      setTimeout(() => {
+        if (incidentMap) incidentMap.invalidateSize();
+      }, 50);
     } else {
       manual.style.display = ''; gps.style.display = 'none';
       tabManual.classList.add('active'); tabGps.classList.remove('active');
@@ -396,6 +525,235 @@
       setTimeout(() => {
         document.getElementById('gps-status').textContent = '📍 Location refreshed';
       }, 1000);
+    }
+  }
+
+  function initTomTomMap() {
+    const mapEl = document.getElementById('tomtom-map');
+    if (!mapEl) return;
+
+    if (!TOMTOM_API_KEY) {
+      setMapHelper('TomTom API key is missing. Add TOMTOM_API_KEY to your .env file.');
+      return;
+    }
+
+    if (!window.L) {
+      setMapHelper('Map library could not be loaded. Check your internet connection.');
+      return;
+    }
+
+    const lat = Number(document.getElementById('latitude').value) || TOMTOM_DEFAULT_LOCATION.lat;
+    const lng = Number(document.getElementById('longitude').value) || TOMTOM_DEFAULT_LOCATION.lng;
+
+    incidentMap = L.map(mapEl, {
+      scrollWheelZoom: false,
+      zoomControl: true,
+    }).setView([lat, lng], 14);
+
+    L.tileLayer('https://api.tomtom.com/map/1/tile/basic/main/{z}/{x}/{y}.png?tileSize=256&view=Unified&key=' + encodeURIComponent(TOMTOM_API_KEY), {
+      maxZoom: 22,
+      attribution: '&copy; TomTom',
+    }).addTo(incidentMap);
+
+    incidentMarker = L.marker([lat, lng], { draggable: true }).addTo(incidentMap);
+
+    incidentMap.on('click', (event) => {
+      setTomTomLocation(event.latlng.lat, event.latlng.lng, true);
+    });
+
+    incidentMarker.on('dragend', (event) => {
+      const point = event.target.getLatLng();
+      setTomTomLocation(point.lat, point.lng, true);
+    });
+
+    setTomTomLocation(lat, lng, false);
+    setTimeout(() => incidentMap.invalidateSize(), 100);
+  }
+
+  function setTomTomLocation(lat, lng, shouldReverseGeocode = false, address = null) {
+    const safeLat = Number(lat);
+    const safeLng = Number(lng);
+    if (!Number.isFinite(safeLat) || !Number.isFinite(safeLng)) return;
+
+    document.getElementById('latitude').value = safeLat.toFixed(6);
+    document.getElementById('longitude').value = safeLng.toFixed(6);
+
+    if (incidentMarker) {
+      incidentMarker.setLatLng([safeLat, safeLng]);
+    }
+
+    if (incidentMap) {
+      incidentMap.panTo([safeLat, safeLng]);
+    }
+
+    if (address) {
+      applyTomTomAddress(address, safeLat, safeLng);
+      return;
+    }
+
+    document.getElementById('gps-addr').textContent = `${formatCoordinate(safeLat, 'lat')}, ${formatCoordinate(safeLng, 'lng')}`;
+    document.getElementById('gps-status').textContent = 'Map location selected';
+
+    if (shouldReverseGeocode) {
+      reverseGeocodeTomTom(safeLat, safeLng);
+    }
+  }
+
+  function applyTomTomAddress(address, lat, lng) {
+    const city = address.municipality || address.localName || address.municipalitySubdivision || '';
+    const state = address.countrySubdivisionName || address.countrySubdivision || '';
+    const freeformAddress = address.freeformAddress || `${formatCoordinate(lat, 'lat')}, ${formatCoordinate(lng, 'lng')}`;
+
+    document.getElementById('gps-addr').textContent = freeformAddress;
+    document.getElementById('gps-status').textContent = 'TomTom location selected';
+    document.getElementById('gps_city').value = city || 'Detected City';
+    document.getElementById('gps_state').value = state || 'Detected State';
+  }
+
+  function formatCoordinate(value, axis) {
+    const direction = axis === 'lat'
+      ? (value >= 0 ? 'N' : 'S')
+      : (value >= 0 ? 'E' : 'W');
+
+    return `${Math.abs(value).toFixed(5)} deg ${direction}`;
+  }
+
+  function setMapHelper(message) {
+    const helper = document.getElementById('tomtom-map-helper');
+    if (helper) helper.textContent = message;
+  }
+
+  async function reverseGeocodeTomTom(lat, lng) {
+    if (!TOMTOM_API_KEY) return;
+
+    setMapHelper('Finding the nearest TomTom address...');
+
+    try {
+      const url = new URL(`https://api.tomtom.com/search/2/reverseGeocode/${lat},${lng}.json`);
+      url.searchParams.set('key', TOMTOM_API_KEY);
+      url.searchParams.set('radius', '100');
+      url.searchParams.set('language', 'en-US');
+      url.searchParams.set('view', 'Unified');
+
+      const response = await fetch(url);
+      if (!response.ok) throw new Error('Reverse geocode failed');
+
+      const data = await response.json();
+      const address = data.addresses?.[0]?.address;
+
+      if (address) {
+        applyTomTomAddress(address, lat, lng);
+        setMapHelper('Address matched by TomTom. You can still drag the marker to adjust it.');
+      } else {
+        setMapHelper('No nearby address found. Coordinates will be submitted.');
+      }
+    } catch (error) {
+      setMapHelper('Could not look up the address. Coordinates will be submitted.');
+    }
+  }
+
+  async function searchTomTomLocation() {
+    const input = document.getElementById('tomtom-search');
+    const resultsEl = document.getElementById('tomtom-results');
+    const query = input?.value.trim();
+
+    if (!query || !resultsEl || !TOMTOM_API_KEY) return;
+
+    if (tomtomSearchController) {
+      tomtomSearchController.abort();
+    }
+
+    tomtomSearchController = new AbortController();
+    resultsEl.style.display = 'block';
+    resultsEl.innerHTML = '<button type="button" class="map-result">Searching TomTom...</button>';
+
+    try {
+      const url = new URL(`https://api.tomtom.com/search/2/geocode/${encodeURIComponent(query)}.json`);
+      url.searchParams.set('key', TOMTOM_API_KEY);
+      url.searchParams.set('countrySet', 'MY');
+      url.searchParams.set('limit', '5');
+      url.searchParams.set('language', 'en-US');
+      url.searchParams.set('view', 'Unified');
+
+      const response = await fetch(url, { signal: tomtomSearchController.signal });
+      if (!response.ok) throw new Error('Search failed');
+
+      const data = await response.json();
+      renderTomTomResults(data.results || []);
+    } catch (error) {
+      if (error.name === 'AbortError') return;
+      resultsEl.innerHTML = '<button type="button" class="map-result">No results found. Try another landmark or address.</button>';
+    }
+  }
+
+  function renderTomTomResults(results) {
+    const resultsEl = document.getElementById('tomtom-results');
+    if (!resultsEl) return;
+
+    if (!results.length) {
+      resultsEl.style.display = 'block';
+      resultsEl.innerHTML = '<button type="button" class="map-result">No results found. Try another landmark or address.</button>';
+      return;
+    }
+
+    resultsEl.style.display = 'block';
+    resultsEl.innerHTML = results.map((result, index) => {
+      const label = escapeHtml(result.address?.freeformAddress || result.poi?.name || 'TomTom result');
+      const place = escapeHtml([result.address?.municipality, result.address?.countrySubdivision].filter(Boolean).join(', '));
+      return `<button type="button" class="map-result" onclick="selectTomTomResult(${index})">${label}${place ? `<span>${place}</span>` : ''}</button>`;
+    }).join('');
+
+    window.tomtomSearchResults = results;
+  }
+
+  function selectTomTomResult(index) {
+    const result = window.tomtomSearchResults?.[index];
+    if (!result?.position) return;
+
+    setTomTomLocation(result.position.lat, result.position.lon, false, result.address);
+    if (incidentMap) incidentMap.setView([result.position.lat, result.position.lon], 16);
+
+    const resultsEl = document.getElementById('tomtom-results');
+    if (resultsEl) resultsEl.style.display = 'none';
+    setMapHelper('Search result selected. Drag the marker if the incident is nearby.');
+  }
+
+  function centerTomTomMap() {
+    const lat = Number(document.getElementById('latitude').value) || TOMTOM_DEFAULT_LOCATION.lat;
+    const lng = Number(document.getElementById('longitude').value) || TOMTOM_DEFAULT_LOCATION.lng;
+
+    if (incidentMap) {
+      incidentMap.setView([lat, lng], 16);
+      incidentMap.invalidateSize();
+    }
+  }
+
+  function escapeHtml(value) {
+    const div = document.createElement('div');
+    div.textContent = value || '';
+    return div.innerHTML;
+  }
+
+  function refreshGPS() {
+    document.getElementById('gps-status').textContent = 'Refreshing location...';
+    setMapHelper('Waiting for your browser location...');
+
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const lat = position.coords.latitude;
+          const lng = position.coords.longitude;
+          setTomTomLocation(lat, lng, true);
+          if (incidentMap) incidentMap.setView([lat, lng], 16);
+        },
+        () => {
+          document.getElementById('gps-status').textContent = 'Geolocation failed. Using the selected map location.';
+          setMapHelper('Browser location was unavailable. Search or click the map to set the location.');
+        }
+      );
+    } else {
+      document.getElementById('gps-status').textContent = 'Geolocation is not supported by this browser.';
+      setMapHelper('Search or click the map to set the location.');
     }
   }
 
